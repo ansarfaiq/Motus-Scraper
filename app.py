@@ -3,12 +3,25 @@ import sys
 import os
 import csv
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
 # اسٹریم لٹ پیج کی بنیادی سیٹنگز
 st.set_page_config(page_title="Motus DOT Data Scraper", page_icon="🚚", layout="wide")
+
+# پلے رائٹ کو کلاؤڈ پر خود بخود بیک اینڈ پر انسٹال کرنے کا فکسڈ طریقہ
+@st.cache_resource
+def initialize_playwright():
+    with st.spinner("Initializing background settings... Please wait."):
+        # یہ کلاؤڈ کے اندر ہی پلے رائٹ اور اس کا کرومیم شیل ڈاؤن لوڈ کر دے گا
+        os.system("python -m playwright install chromium")
+        os.system("python -m playwright install-deps")
+
+# ایپ چلتے ہی یہ سیٹنگ بیک اینڈ پر کنفیگر ہو جائے گی
+initialize_playwright()
+
+# پلے رائٹ کو اب امپورٹ کریں گے تاکہ اوپر انسٹالیشن پہلے مکمل ہو جائے
+from playwright.sync_api import sync_playwright
 
 st.title("🚚 Motus DOT Data Scraper")
 st.subheader("⚡ Real-time Table View | Upload TXT / CSV / XLSX ⚡")
@@ -28,77 +41,70 @@ with col2:
 
 start_btn = st.button("▶ Start Scraping", type="primary")
 
-# اسکرین شاٹ کے مطابق بالکل فکسڈ ڈیٹا نکالنے والا فنکشن
+# پلے رائٹ کے ذریعے سیکیور پورٹل سے ڈیٹا نکالنے والا اصل فنکشن
 def scrape_motus_dot_data(dot_number):
     url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    }
-    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+        with sync_playwright() as p:
+            # ہیڈ لیس براؤزر لانچ کرنا (بغیر نو سینڈ باکس کے کلاؤڈ پر بلاک ہو جاتا ہے)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+            
+            # پیج پر جانا اور نیٹ ورک کے پرسکون ہونے کا انتظار کرنا
+            page.goto(url, timeout=45000, wait_until="networkidle")
+            
+            # 5 سیکنڈ کا اضافی انتظار تاکہ جاوا اسکرپٹ کا ڈیٹا لوڈ ہو جائے
+            page.wait_for_timeout(5000)
+            
+            html = page.content()
+            soup = BeautifulSoup(html, 'html.parser')
+            browser.close()
             
             company_name = "Not Found"
             phone = "Not Found"
             email = "Not Found"
             status = "Active"
             
-            # 1. اسٹیٹس نکالنا (USDOT #6553522 - Active والی لائن سے)
-            main_heading = soup.find(text=re.compile(r'USDOT\s*#'))
-            if not main_heading:
-                # متبادل اگر وہ کسی ٹیگ کے اندر ہو
-                for tag in soup.find_all(['h2', 'h3', 'div']):
-                    if "USDOT #" in tag.text:
-                        main_heading = tag.text
-                        break
-            
-            if main_heading and "Inactive" in str(main_heading):
+            # 1. اسٹیٹس نکالنا (Active / Inactive)
+            if "Inactive" in html or "OOS" in html:
                 status = "Inactive"
-            elif main_heading and "Active" in str(main_heading):
+            elif "Active" in html:
                 status = "Active"
-
-            # 2. ٹیبل کے اندر سے مخصوص فیلڈز (Name, Phone, Email) نکالنا
-            # ہم پورے پیج کے تمام <td> یا <th> ٹیگز کو چیک کریں گے
-            all_cells = soup.find_all(["td", "th", "div"])
             
-            for i, cell in enumerate(all_results := all_cells):
-                cell_text = cell.text.strip()
+            # 2. اسکرین شاٹ کے مطابق ٹیبل کا ڈیٹا نکالنا
+            # ہم پورے پیج کے تمام TD اور TH ایلیمنٹس کو اسکین کریں گے
+            cells = soup.find_all(["td", "th", "span", "div"])
+            for cell in cells:
+                text = cell.text.strip()
                 
-                # کمپنی کا نام نکالنا
-                if "Legal Business Name" in cell_text:
-                    # اس سے اگلا والا سیل یا اس کے اندر کا ٹیکسٹ ڈیٹا ہوگا
-                    next_sibling = cell.find_next()
-                    if next_sibling:
-                        company_name = next_sibling.text.strip()
+                if "Legal Business Name" in text:
+                    nxt = cell.find_next()
+                    if nxt: company_name = nxt.text.strip()
+                    
+                if "Business Telephone No." in text:
+                    nxt = cell.find_next()
+                    if nxt: phone = nxt.text.strip()
+                    
+                if "Business Email" in text:
+                    nxt = cell.find_next()
+                    if nxt: email = nxt.text.strip()
+            
+            # بیک اپ طریقہ: اگر اوپر سے نہ ملے تو پورے پیج کے ٹیکسٹ سے نکالنا
+            if company_name == "Not Found":
+                match = re.search(r'Legal Business Name\s+(.*)', soup.text)
+                if match: company_name = match.group(1).split('\n')[0].strip()
                 
-                # فون نمبر نکالنا
-                if "Business Telephone No." in cell_text:
-                    next_sibling = cell.find_next()
-                    if next_sibling:
-                        phone = next_sibling.text.strip()
+            if phone == "Not Found":
+                match = re.search(r'Business Telephone No\.\s+(.*)', soup.text)
+                if match: phone = match.group(1).split('\n')[0].strip()
                 
-                # ای میل نکالنا
-                if "Business Email" in cell_text:
-                    next_sibling = cell.find_next()
-                    if next_sibling:
-                        email = next_sibling.text.strip()
-
-            # اگر اوپر والے طریقے سے نہ ملے تو ڈائریکٹ ٹیکسٹ سرچ کا متبادل (Backup Match)
-            if company_name == "Not Found" or phone == "Not Found" or email == "Not Found":
-                for row in soup.find_all(["tr", "div"]):
-                    row_text = row.text.strip()
-                    if "Legal Business Name" in row_text and company_name == "Not Found":
-                        company_name = row_text.replace("Legal Business Name", "").strip()
-                    if "Business Telephone No." in row_text and phone == "Not Found":
-                        phone = row_text.replace("Business Telephone No.", "").strip()
-                    if "Business Email" in row_text and email == "Not Found":
-                        email = row_text.replace("Business Email", "").strip()
+            if email == "Not Found":
+                match = re.search(r'Business Email\s+(.*)', soup.text)
+                if match: email = match.group(1).split('\n')[0].strip()
 
             return {
                 "USDOT": dot_number,
@@ -107,16 +113,14 @@ def scrape_motus_dot_data(dot_number):
                 "Email": email,
                 "Status": status
             }
-        else:
-            return {"USDOT": dot_number, "Company Name": "Blocked/Error", "Phone": "N/A", "Email": "N/A", "Status": f"HTTP {response.status_code}"}
             
     except Exception as e:
         return {
             "USDOT": dot_number,
-            "Company Name": "Error",
+            "Company Name": "Error/Blocked",
             "Phone": "N/A",
             "Email": "N/A",
-            "Status": "Connection Failed"
+            "Status": f"Failed: {str(e)[:20]}"
         }
 
 # جب بٹن دبایا جائے
@@ -134,7 +138,7 @@ if start_btn:
         progress_bar = st.progress(0)
         
         for index, dot in enumerate(dot_numbers):
-            with st.spinner(f"Scraping DOT: {dot}..."):
+            with st.spinner(f"Scraping DOT from Motus Portal: {dot}..."):
                 res = scrape_motus_dot_data(dot)
                 all_results.append(res)
                 
@@ -154,7 +158,7 @@ if start_btn:
         st.download_button(
             label="📥 Download Data as CSV",
             data=csv_data,
-            file_name="motus_dot_data.csv",
+            file_name="motus_portal_data.csv",
             mime="text/csv",
             type="primary"
         )
