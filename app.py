@@ -3,8 +3,8 @@ import sys
 import os
 import csv
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 import streamlit as st
 
 # اسٹریم لٹ پیج کی بنیادی سیٹنگز
@@ -28,67 +28,73 @@ with col2:
 
 start_btn = st.button("▶ Start Scraping", type="primary")
 
-# موٹس پورٹل سے ڈیٹا نکالنے والا اصل فنکشن
+# بغیر کسی براؤزر کے، خالص ٹیکسٹ میچنگ کے ذریعے اسکرین شاٹ کے مطابق ڈیٹا نکالنے والا فنکشن
 def scrape_motus_dot_data(dot_number):
     url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    }
+    
     try:
-        with sync_playwright() as p:
-            # کلاؤڈ سرور کے لیے ہیڈ لیس براؤزر لانچ کرنا
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-            page = context.new_page()
+        response = requests.get(url, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # پیج پر جانا اور لوڈ ہونے کا انتظار کرنا
-            page.goto(url, timeout=45000, wait_until="networkidle")
-            page.wait_for_timeout(5000) # 5 سیکنڈ کا انتظار تاکہ جاوا اسکرپٹ کا ڈیٹا لوڈ ہو جائے
-            
-            html = page.content()
-            soup = BeautifulSoup(html, 'html.parser')
-            browser.close()
+            # پورے صفحے کا صاف ٹیکسٹ نکالنا
+            page_text = soup.get_text(separator="\n")
+            # صاف لائنوں کی لسٹ بنانا
+            lines = [line.strip() for line in page_text.split("\n") if line.strip()]
             
             company_name = "Not Found"
             phone = "Not Found"
             email = "Not Found"
             status = "Active"
             
-            # 1. اسٹیٹس تلاش کرنا
-            if "Inactive" in html or "OOS" in html:
-                status = "Inactive"
-            elif "Active" in html:
-                status = "Active"
+            # 1. اسٹیٹس تلاش کرنا (USDOT #6553522 - Active والی لائن سے)
+            for line in lines:
+                if f"USDOT #{dot_number}" in line or "USDOT #" in line:
+                    if "Inactive" in line:
+                        status = "Inactive"
+                    break
             
-            # 2. اسکرین شاٹ کے مطابق لیبلز کے سامنے سے ڈیٹا اٹھانا
-            cells = soup.find_all(["td", "th", "span", "div"])
-            for cell in cells:
-                text = cell.text.strip()
+            # 2. لسٹ کے اندر ٹیکسٹ پوزیشنز کے ذریعے ڈیٹا نکالنا (اسکرین شاٹ فکسڈ میچ)
+            for i, line in enumerate(lines):
+                # اگر لائن میں 'Legal Business Name' لکھا ہو، تو عام طور پر اگلی لائن ڈیٹا ہوگی
+                if "Legal Business Name" in line and i + 1 < len(lines):
+                    # چیک کریں کہ اگلی لائن کوئی دوسرا لیبل تو نہیں ہے
+                    if not any(keyword in lines[i+1] for keyword in ["Doing Business As", "Principal Place", "Mailing Address", "Business Telephone", "Business Email"]):
+                        company_name = lines[i+1]
                 
-                if "Legal Business Name" in text:
-                    nxt = cell.find_next()
-                    if nxt: company_name = nxt.text.strip()
-                    
-                if "Business Telephone No." in text:
-                    nxt = cell.find_next()
-                    if nxt: phone = nxt.text.strip()
-                    
-                if "Business Email" in text:
-                    nxt = cell.find_next()
-                    if nxt: email = nxt.text.strip()
+                # فون نمبر تلاش کرنا
+                if "Business Telephone No." in line and i + 1 < len(lines):
+                    if not any(keyword in lines[i+1] for keyword in ["Company Officials", "Business Email", "Form of Business"]):
+                        phone = lines[i+1]
+                
+                # ای میل تلاش کرنا
+                if "Business Email" in line and i + 1 < len(lines):
+                    if not any(keyword in lines[i+1] for keyword in ["Company Officials", "Business Telephone"]):
+                        email = lines[i+1]
             
-            # بیک اپ ٹیکسٹ میچنگ اگر ٹیبل سے مس ہو جائے
-            if company_name == "Not Found":
-                match = re.search(r'Legal Business Name\s+(.*)', soup.text)
-                if match: company_name = match.group(1).split('\n')[0].strip()
+            # بیک اپ ریجیکس (Regex) اگر اوپر والا طریقہ مس ہو جائے
+            if company_name == "Not Found" or phone == "Not Found" or email == "Not Found":
+                # پورے ٹیکسٹ میں سے ریجیکس پیٹرن سرچ
+                full_text_flat = " ".join(lines)
                 
-            if phone == "Not Found":
-                match = re.search(r'Business Telephone No\.\s+(.*)', soup.text)
-                if match: phone = match.group(1).split('\n')[0].strip()
-                
-            if email == "Not Found":
-                match = re.search(r'Business Email\s+(.*)', soup.text)
-                if match: email = match.group(1).split('\n')[0].strip()
+                name_match = re.search(r'Legal Business Name\s+([A-Z0-aligned\s,.\u00c0-\u017f]+?)(?=Doing Business|Principal|$)', full_text_flat, re.IGNORECASE)
+                if name_match and company_name == "Not Found":
+                    company_name = name_match.group(1).strip()
+                    
+                phone_match = re.search(r'Business Telephone No\.\s+(\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})', full_text_flat)
+                if phone_match and phone == "Not Found":
+                    phone = phone_match.group(1).strip()
+                    
+                email_match = re.search(r'Business Email\s+([\w\.-]+@[\w\.-]+)', full_text_flat)
+                if email_match and email == "Not Found":
+                    email = email_match.group(1).strip()
 
             return {
                 "USDOT": dot_number,
@@ -97,14 +103,16 @@ def scrape_motus_dot_data(dot_number):
                 "Email": email,
                 "Status": status
             }
+        else:
+            return {"USDOT": dot_number, "Company Name": "Error/Blocked", "Phone": "N/A", "Email": "N/A", "Status": f"HTTP {response.status_code}"}
             
     except Exception as e:
         return {
             "USDOT": dot_number,
-            "Company Name": "Error/Blocked",
+            "Company Name": "Error",
             "Phone": "N/A",
             "Email": "N/A",
-            "Status": f"Failed: {str(e)[:20]}"
+            "Status": "Connection Failed"
         }
 
 # جب بٹن دبایا جائے
@@ -122,7 +130,7 @@ if start_btn:
         progress_bar = st.progress(0)
         
         for index, dot in enumerate(dot_numbers):
-            with st.spinner(f"Scraping Motus Portal for: {dot}..."):
+            with st.spinner(f"Scraping DOT: {dot}..."):
                 res = scrape_motus_dot_data(dot)
                 all_results.append(res)
                 
@@ -133,7 +141,7 @@ if start_btn:
             
         st.success("Scraping complete! 🎉")
         
-        # --- ڈاؤن لوڈ کا بٹن ---
+        # --- ایکسل / CSV ڈاؤن لوڈ کا بٹن ---
         st.write("---")
         st.subheader("💾 Export Data")
         
@@ -141,7 +149,7 @@ if start_btn:
         st.download_button(
             label="📥 Download Data as CSV",
             data=csv_data,
-            file_name="motus_portal_data.csv",
+            file_name="motus_dot_data.csv",
             mime="text/csv",
             type="primary"
         )
