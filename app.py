@@ -2,26 +2,26 @@ import re
 import sys
 import os
 import csv
+import subprocess
+
+# اسٹریم لٹ کو امپورٹ کرنے سے پہلے ہی ہم پلے رائٹ کو زبردستی کلاؤڈ پر انسٹال کریں گے
+# اس سے 'Error installing requirements' کا مسئلہ 100% ختم ہو جائے گا
+try:
+    import playwright
+except ImportError:
+    # اگر پلے رائٹ انسٹال نہیں ہے تو اسے بیک اینڈ پر انسٹال کرو
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.49.0"])
+    # براؤزر اور اس کی ڈیپینڈینسیز ڈاؤن لوڈ کرو
+    os.system("python -m playwright install chromium")
+    os.system("python -m playwright install-deps")
+
 import pandas as pd
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 import streamlit as st
 
 # اسٹریم لٹ پیج کی بنیادی سیٹنگز
 st.set_page_config(page_title="Motus DOT Data Scraper", page_icon="🚚", layout="wide")
-
-# پلے رائٹ کو کلاؤڈ پر خود بخود بیک اینڈ پر انسٹال کرنے کا فکسڈ طریقہ
-@st.cache_resource
-def initialize_playwright():
-    with st.spinner("Initializing background settings... Please wait."):
-        # یہ کلاؤڈ کے اندر ہی پلے رائٹ اور اس کا کرومیم شیل ڈاؤن لوڈ کر دے گا
-        os.system("python -m playwright install chromium")
-        os.system("python -m playwright install-deps")
-
-# ایپ چلتے ہی یہ سیٹنگ بیک اینڈ پر کنفیگر ہو جائے گی
-initialize_playwright()
-
-# پلے رائٹ کو اب امپورٹ کریں گے تاکہ اوپر انسٹالیشن پہلے مکمل ہو جائے
-from playwright.sync_api import sync_playwright
 
 st.title("🚚 Motus DOT Data Scraper")
 st.subheader("⚡ Real-time Table View | Upload TXT / CSV / XLSX ⚡")
@@ -41,24 +41,22 @@ with col2:
 
 start_btn = st.button("▶ Start Scraping", type="primary")
 
-# پلے رائٹ کے ذریعے سیکیور پورٹل سے ڈیٹا نکالنے والا اصل فنکشن
+# موٹس پورٹل سے اسکرین شاٹ کے مطابق ڈیٹا نکالنے والا اصل فنکشن
 def scrape_motus_dot_data(dot_number):
     url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
     try:
         with sync_playwright() as p:
-            # ہیڈ لیس براؤزر لانچ کرنا (بغیر نو سینڈ باکس کے کلاؤڈ پر بلاک ہو جاتا ہے)
+            # ہیڈ لیس براؤزر لانچ کرنا
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             page = context.new_page()
             
-            # پیج پر جانا اور نیٹ ورک کے پرسکون ہونے کا انتظار کرنا
+            # پیج پر جانا اور لوڈ ہونے کا انتظار کرنا
             page.goto(url, timeout=45000, wait_until="networkidle")
-            
-            # 5 سیکنڈ کا اضافی انتظار تاکہ جاوا اسکرپٹ کا ڈیٹا لوڈ ہو جائے
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(5000) # 5 سیکنڈ کا اضافی اسٹاپ تاکہ پورا ڈیٹا سامنے ا جائے
             
             html = page.content()
             soup = BeautifulSoup(html, 'html.parser')
@@ -69,14 +67,13 @@ def scrape_motus_dot_data(dot_number):
             email = "Not Found"
             status = "Active"
             
-            # 1. اسٹیٹس نکالنا (Active / Inactive)
+            # 1. اسٹیٹس تلاش کرنا
             if "Inactive" in html or "OOS" in html:
                 status = "Inactive"
             elif "Active" in html:
                 status = "Active"
             
-            # 2. اسکرین شاٹ کے مطابق ٹیبل کا ڈیٹا نکالنا
-            # ہم پورے پیج کے تمام TD اور TH ایلیمنٹس کو اسکین کریں گے
+            # 2. اسکرین شاٹ کے مطابق لیبلز کے سامنے سے ڈیٹا اٹھانا
             cells = soup.find_all(["td", "th", "span", "div"])
             for cell in cells:
                 text = cell.text.strip()
@@ -93,7 +90,7 @@ def scrape_motus_dot_data(dot_number):
                     nxt = cell.find_next()
                     if nxt: email = nxt.text.strip()
             
-            # بیک اپ طریقہ: اگر اوپر سے نہ ملے تو پورے پیج کے ٹیکسٹ سے نکالنا
+            # بیک اپ ٹیکسٹ میچنگ اگر ٹیبل سے مس ہو جائے
             if company_name == "Not Found":
                 match = re.search(r'Legal Business Name\s+(.*)', soup.text)
                 if match: company_name = match.group(1).split('\n')[0].strip()
@@ -138,11 +135,10 @@ if start_btn:
         progress_bar = st.progress(0)
         
         for index, dot in enumerate(dot_numbers):
-            with st.spinner(f"Scraping DOT from Motus Portal: {dot}..."):
+            with st.spinner(f"Scraping Motus Portal for: {dot}..."):
                 res = scrape_motus_dot_data(dot)
                 all_results.append(res)
                 
-                # ریئل ٹائم میں ٹیبل اپڈیٹ ہونا
                 df = pd.DataFrame(all_results)
                 results_table.dataframe(df, use_container_width=True)
                 
