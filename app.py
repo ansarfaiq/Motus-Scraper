@@ -2,80 +2,100 @@ import re
 import sys
 import os
 import csv
-import threading
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
-# ایکسل فائل ہینڈلنگ کے لیے
-try:
-    from openpyxl import load_workbook
-except ImportError:
-    load_workbook = None
-
 # اسٹریم لٹ پیج کی بنیادی سیٹنگز
-st.set_page_config(page_title="Motus Data Scraper", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="Motus DOT Data Scraper", page_icon="🚚", layout="wide")
 
-st.title("🚚 Motus Data Scraper")
+st.title("🚚 Motus DOT Data Scraper")
 st.subheader("⚡ Real-time Table View | Upload TXT / CSV / XLSX ⚡")
 
-# یوزر سے ان پٹ لینے کا حصہ
+# یوزر ان پٹ کا حصہ
 col1, col2 = st.columns([2, 1])
 
 with col1:
     user_input = st.text_area(
         "📝 Enter USDOT Numbers manually (comma or space separated):",
-        value="655322\n5094822\n7270293",
+        value="6553522",
         height=150
     )
 
 with col2:
     uploaded_file = st.file_uploader("📂 Load File (.txt, .csv, .xlsx)", type=["txt", "csv", "xlsx"])
 
-# بٹنز
 start_btn = st.button("▶ Start Scraping", type="primary")
-clear_btn = st.button("🗑 Clear Table")
 
-# اسکریپنگ کا مین فنکشن (جو بغیر براؤزر کے ڈائریکٹ ریکویسٹ بھیجے گا)
-def scrape_dot_data(dot_number):
-    # یہاں آپ کی مطلوبہ ویب سائٹ کا یو آر ایل آئے گا، مثال کے طور پر:
-    url = f"https://ai.fmcsa.dot.gov/SMS/Carrier/{dot_number}/CompleteProfile.aspx"
+# موٹس ڈاٹ جی او وی کے لیے بالکل سادہ اور تیز اسکریپنگ فنکشن (بغیر پلے رائٹ کے)
+def scrape_motus_dot_data(dot_number):
+    # آپ کا بتایا ہوا بالکل صحیح لنک
+    url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
+    # یہ ہیڈرز ویب سائٹ کو یہ یقین دلائیں گے کہ یہ ایک عام براؤزر ہے
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
     }
     
     try:
-        # ڈائریکٹ ویب سائٹ کو ہٹ کرنا بغیر کسی براؤزر کے
+        # ڈائریکٹ لنک ہٹ کرنا (سپر فاسٹ)
         response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # ----------------------------------------------------
-            # نوٹ: یہاں آپ کا پرانا بیوٹی فل سوپ (BeautifulSoup) کا لاجک ائے گا
-            # جو ڈیٹا نکالتا ہے (جیسے کمپنی کا نام، ای میل، فون وغیرہ)
-            # عارضی طور پر میں ایک ڈمی رزلٹ بنا رہا ہوں:
-            # ----------------------------------------------------
+            # --- موٹس پورٹل کے مطابق ڈیٹا نکالنا ---
             
-            # مثال کے طور پر نام نکالنا (اگر آپ کے پاس ٹیگ کا پتا ہو)
-            company_name_tag = soup.find('h2') # یا جو بھی ٹیگ آپ ڈھونڈ رہے تھے
-            company_name = company_name_tag.text.strip() if company_name_tag else "Not Found"
+            # 1. کمپنی کا نام (اگر h1 یا h2 ٹیگ میں ہو)
+            name_tag = soup.find("h1") or soup.find("h2") or soup.find("title")
+            company_name = name_tag.text.strip() if name_tag else "Not Found"
             
+            # اگر نام میں ویب سائٹ کا ٹائٹل آ رہا ہو تو اسے صاف کرنا
+            company_name = company_name.replace(" - Motus", "").strip()
+            
+            # 2. فون نمبر تلاش کرنا
+            phone = "Not Found"
+            # پورے پیج کے ٹیکسٹ میں سے فون نمبر کا پیٹرن ڈھونڈنا
+            phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', response.text)
+            if phone_match:
+                phone = phone_match.group(0)
+            
+            # 3. ای میل تلاش کرنا
+            email = "Not Found"
+            email_match = re.search(r'[\w\.-]+@[\w\.-]+', response.text)
+            if email_match:
+                email = email_match.group(0)
+            
+            # 4. اسٹیٹس
+            status = "Active"
+            if "Inactive" in response.text or "Suspended" in response.text:
+                status = "Inactive"
+                
             return {
                 "USDOT": dot_number,
                 "Company Name": company_name,
-                "Status": "Success"
+                "Phone": phone,
+                "Email": email,
+                "Status": status
             }
         else:
-            return {"USDOT": dot_number, "Company Name": "Blocked/Error", "Status": f"HTTP {response.status_code}"}
+            return {"USDOT": dot_number, "Company Name": "Blocked/Error", "Phone": "N/A", "Email": "N/A", "Status": f"HTTP {response.status_code}"}
             
     except Exception as e:
-        return {"USDOT": dot_number, "Company Name": "Failed to Connect", "Status": str(e)}
+        return {
+            "USDOT": dot_number,
+            "Company Name": "Error",
+            "Phone": "N/A",
+            "Email": "N/A",
+            "Status": "Connection Failed"
+        }
 
-# جب یوزر اسٹارٹ بٹن دبائے
+# جب بٹن دبایا جائے
 if start_btn:
-    # ڈاٹ نمبرز کو الگ کرنا
+    # نمبرز کو الگ کرنا
     dot_numbers = [d.strip() for d in re.split(r'[\s,]+', user_input) if d.strip()]
     
     if not dot_numbers:
@@ -83,22 +103,33 @@ if start_btn:
     else:
         st.write("### 📊 Extracted Data:")
         
-        # ڈیٹا دکھانے کے لیے ایک خالی ٹیبل بنانا
         results_table = st.empty()
         all_results = []
         
         progress_bar = st.progress(0)
         
-        # لوپ چلا کر ایک ایک کر کے ڈیٹا نکالنا
         for index, dot in enumerate(dot_numbers):
             with st.spinner(f"Scraping DOT: {dot}..."):
-                res = scrape_dot_data(dot)
+                res = scrape_motus_dot_data(dot)
                 all_results.append(res)
                 
-                # ٹیبل کو ریئل ٹائم اپڈیٹ کرنا
-                results_table.dataframe(all_results)
+                # ریئل ٹائم میں ٹیبل اپڈیٹ ہونا
+                df = pd.DataFrame(all_results)
+                results_table.dataframe(df, use_container_width=True)
                 
-            # پروگریس بار اپڈیٹ کرنا
             progress_bar.progress((index + 1) / len(dot_numbers))
             
         st.success("Scraping complete! 🎉")
+        
+        # --- ڈاؤن لوڈ کا بٹن ---
+        st.write("---")
+        st.subheader("💾 Export Data")
+        
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Data as CSV",
+            data=csv_data,
+            file_name="motus_dot_data.csv",
+            mime="text/csv",
+            type="primary"
+        )
