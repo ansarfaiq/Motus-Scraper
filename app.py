@@ -28,12 +28,10 @@ with col2:
 
 start_btn = st.button("▶ Start Scraping", type="primary")
 
-# موٹس ڈاٹ جی او وی کے لیے بالکل سادہ اور تیز اسکریپنگ فنکشن (بغیر پلے رائٹ کے)
+# اسکرین شاٹ کے مطابق بالکل فکسڈ ڈیٹا نکالنے والا فنکشن
 def scrape_motus_dot_data(dot_number):
-    # آپ کا بتایا ہوا بالکل صحیح لنک
     url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
-    # یہ ہیڈرز ویب سائٹ کو یہ یقین دلائیں گے کہ یہ ایک عام براؤزر ہے
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
@@ -41,39 +39,67 @@ def scrape_motus_dot_data(dot_number):
     }
     
     try:
-        # ڈائریکٹ لنک ہٹ کرنا (سپر فاسٹ)
         response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # --- موٹس پورٹل کے مطابق ڈیٹا نکالنا ---
-            
-            # 1. کمپنی کا نام (اگر h1 یا h2 ٹیگ میں ہو)
-            name_tag = soup.find("h1") or soup.find("h2") or soup.find("title")
-            company_name = name_tag.text.strip() if name_tag else "Not Found"
-            
-            # اگر نام میں ویب سائٹ کا ٹائٹل آ رہا ہو تو اسے صاف کرنا
-            company_name = company_name.replace(" - Motus", "").strip()
-            
-            # 2. فون نمبر تلاش کرنا
+            company_name = "Not Found"
             phone = "Not Found"
-            # پورے پیج کے ٹیکسٹ میں سے فون نمبر کا پیٹرن ڈھونڈنا
-            phone_match = re.search(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', response.text)
-            if phone_match:
-                phone = phone_match.group(0)
-            
-            # 3. ای میل تلاش کرنا
             email = "Not Found"
-            email_match = re.search(r'[\w\.-]+@[\w\.-]+', response.text)
-            if email_match:
-                email = email_match.group(0)
-            
-            # 4. اسٹیٹس
             status = "Active"
-            if "Inactive" in response.text or "Suspended" in response.text:
+            
+            # 1. اسٹیٹس نکالنا (USDOT #6553522 - Active والی لائن سے)
+            main_heading = soup.find(text=re.compile(r'USDOT\s*#'))
+            if not main_heading:
+                # متبادل اگر وہ کسی ٹیگ کے اندر ہو
+                for tag in soup.find_all(['h2', 'h3', 'div']):
+                    if "USDOT #" in tag.text:
+                        main_heading = tag.text
+                        break
+            
+            if main_heading and "Inactive" in str(main_heading):
                 status = "Inactive"
+            elif main_heading and "Active" in str(main_heading):
+                status = "Active"
+
+            # 2. ٹیبل کے اندر سے مخصوص فیلڈز (Name, Phone, Email) نکالنا
+            # ہم پورے پیج کے تمام <td> یا <th> ٹیگز کو چیک کریں گے
+            all_cells = soup.find_all(["td", "th", "div"])
+            
+            for i, cell in enumerate(all_results := all_cells):
+                cell_text = cell.text.strip()
                 
+                # کمپنی کا نام نکالنا
+                if "Legal Business Name" in cell_text:
+                    # اس سے اگلا والا سیل یا اس کے اندر کا ٹیکسٹ ڈیٹا ہوگا
+                    next_sibling = cell.find_next()
+                    if next_sibling:
+                        company_name = next_sibling.text.strip()
+                
+                # فون نمبر نکالنا
+                if "Business Telephone No." in cell_text:
+                    next_sibling = cell.find_next()
+                    if next_sibling:
+                        phone = next_sibling.text.strip()
+                
+                # ای میل نکالنا
+                if "Business Email" in cell_text:
+                    next_sibling = cell.find_next()
+                    if next_sibling:
+                        email = next_sibling.text.strip()
+
+            # اگر اوپر والے طریقے سے نہ ملے تو ڈائریکٹ ٹیکسٹ سرچ کا متبادل (Backup Match)
+            if company_name == "Not Found" or phone == "Not Found" or email == "Not Found":
+                for row in soup.find_all(["tr", "div"]):
+                    row_text = row.text.strip()
+                    if "Legal Business Name" in row_text and company_name == "Not Found":
+                        company_name = row_text.replace("Legal Business Name", "").strip()
+                    if "Business Telephone No." in row_text and phone == "Not Found":
+                        phone = row_text.replace("Business Telephone No.", "").strip()
+                    if "Business Email" in row_text and email == "Not Found":
+                        email = row_text.replace("Business Email", "").strip()
+
             return {
                 "USDOT": dot_number,
                 "Company Name": company_name,
@@ -95,7 +121,6 @@ def scrape_motus_dot_data(dot_number):
 
 # جب بٹن دبایا جائے
 if start_btn:
-    # نمبرز کو الگ کرنا
     dot_numbers = [d.strip() for d in re.split(r'[\s,]+', user_input) if d.strip()]
     
     if not dot_numbers:
