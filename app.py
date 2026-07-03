@@ -2,19 +2,6 @@ import re
 import sys
 import os
 import csv
-import subprocess
-
-# اسٹریم لٹ کو امپورٹ کرنے سے پہلے ہی ہم پلے رائٹ کو زبردستی کلاؤڈ پر انسٹال کریں گے
-# اس سے 'Error installing requirements' کا مسئلہ 100% ختم ہو جائے گا
-try:
-    import playwright
-except ImportError:
-    # اگر پلے رائٹ انسٹال نہیں ہے تو اسے بیک اینڈ پر انسٹال کرو
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.49.0"])
-    # براؤزر اور اس کی ڈیپینڈینسیز ڈاؤن لوڈ کرو
-    os.system("python -m playwright install chromium")
-    os.system("python -m playwright install-deps")
-
 import pandas as pd
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -41,13 +28,13 @@ with col2:
 
 start_btn = st.button("▶ Start Scraping", type="primary")
 
-# موٹس پورٹل سے اسکرین شاٹ کے مطابق ڈیٹا نکالنے والا اصل فنکشن
+# موٹس پورٹل سے ڈیٹا نکالنے والا اصل فنکشن
 def scrape_motus_dot_data(dot_number):
     url = f"https://motus.dot.gov/customer/{dot_number}/account" 
     
     try:
         with sync_playwright() as p:
-            # ہیڈ لیس براؤزر لانچ کرنا
+            # کلاؤڈ سرور کے لیے ہیڈ لیس براؤزر لانچ کرنا
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -56,7 +43,7 @@ def scrape_motus_dot_data(dot_number):
             
             # پیج پر جانا اور لوڈ ہونے کا انتظار کرنا
             page.goto(url, timeout=45000, wait_until="networkidle")
-            page.wait_for_timeout(5000) # 5 سیکنڈ کا اضافی اسٹاپ تاکہ پورا ڈیٹا سامنے ا جائے
+            page.wait_for_timeout(5000) # 5 سیکنڈ کا انتظار تاکہ جاوا اسکرپٹ کا ڈیٹا لوڈ ہو جائے
             
             html = page.content()
             soup = BeautifulSoup(html, 'html.parser')
